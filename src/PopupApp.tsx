@@ -3,6 +3,7 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { WalletDashboard } from './components/WalletDashboard';
 import { UnlockWallet } from './components/UnlockWallet';
 import { DAppConnection } from './components/DAppConnection';
+import { DAppRequestHandler } from './components/DAppRequestHandler';
 import { ThemeProvider } from './components/ThemeProvider';
 import { Wallet, DAppConnectionRequest } from './types/wallet';
 import { Toaster } from '@/components/ui/toaster';
@@ -16,6 +17,7 @@ function PopupApp() {
   const [isLoading, setIsLoading] = useState(true);
   const [isPopupMode, setIsPopupMode] = useState(true);
   const [connectionRequest, setConnectionRequest] = useState<DAppConnectionRequest | null>(null);
+  const [contractRequest, setContractRequest] = useState<any>(null);
 
   // ONLY load data once on mount - NO dependencies to prevent loops
   useEffect(() => {
@@ -40,6 +42,20 @@ function PopupApp() {
           } catch (error) {
             console.error('Failed to parse connection request:', error);
             await ExtensionStorageManager.remove('pendingConnectionRequest');
+          }
+        }
+        
+        // Check for pending contract request
+        const pendingContractRequest = await ExtensionStorageManager.get('pendingContractRequest');
+        if (pendingContractRequest) {
+          try {
+            const contractReq = typeof pendingContractRequest === 'string' 
+              ? JSON.parse(pendingContractRequest) 
+              : pendingContractRequest;
+            setContractRequest(contractReq);
+          } catch (error) {
+            console.error('Failed to parse contract request:', error);
+            await ExtensionStorageManager.remove('pendingContractRequest');
           }
         }
         
@@ -260,6 +276,38 @@ function PopupApp() {
     window.close();
   };
 
+  const handleContractApprove = async (result: any) => {
+    if (!contractRequest) return;
+    
+    // Send success response
+    chrome.runtime.sendMessage({
+      type: 'CONTRACT_RESULT',
+      origin: contractRequest.origin,
+      approved: true,
+      result: result
+    });
+    
+    // Clear pending request and close popup
+    await ExtensionStorageManager.remove('pendingContractRequest');
+    window.close();
+  };
+
+  const handleContractReject = async (error?: string) => {
+    if (!contractRequest) return;
+    
+    // Send rejection response
+    chrome.runtime.sendMessage({
+      type: 'CONTRACT_RESULT',
+      origin: contractRequest.origin,
+      approved: false,
+      error: error
+    });
+    
+    // Clear pending request and close popup
+    await ExtensionStorageManager.remove('pendingContractRequest');
+    window.close();
+  };
+
   if (isLoading) {
     return (
       <ThemeProvider defaultTheme="dark" storageKey="octra-wallet-theme">
@@ -283,6 +331,26 @@ function PopupApp() {
             onWalletSelect={setWallet}
             onApprove={handleConnectionApprove}
             onReject={handleConnectionReject}
+          />
+          <Toaster />
+        </div>
+      </ThemeProvider>
+    );
+  }
+
+  // Handle contract request - Show contract interaction interface
+  if (contractRequest) {
+    console.log('🔗 PopupApp: Showing contract request screen');
+    return (
+      <ThemeProvider defaultTheme="dark" storageKey="octra-wallet-theme">
+        <div className="w-[400px] h-[600px] bg-background">
+          <DAppRequestHandler 
+            wallets={wallets}
+            contractRequest={contractRequest}
+            selectedWallet={wallet}
+            onWalletSelect={setWallet}
+            onApprove={handleContractApprove}
+            onReject={handleContractReject}
           />
           <Toaster />
         </div>

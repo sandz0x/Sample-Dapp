@@ -236,32 +236,56 @@ async function handleContractRequest(data, sender) {
     throw new Error('dApp not connected');
   }
   
-  // Build URL parameters for contract request
-  const urlParams = new URLSearchParams({
-    action: 'contract',
-    origin: encodeURIComponent(origin),
-    contractAddress: encodeURIComponent(contractAddress),
-    methodName: encodeURIComponent(methodName),
-    methodType: encodeURIComponent(methodType),
-    connectedAddress: encodeURIComponent(connection.selectedAddress)
+  // Store contract request data for popup to access
+  await setStorageData('pendingContractRequest', {
+    origin,
+    appName: appName || origin,
+    appIcon: appIcon || null,
+    contractAddress,
+    methodName,
+    methodType,
+    params,
+    gasLimit,
+    gasPrice,
+    value,
+    description,
+    connectedAddress: connection.selectedAddress,
+    timestamp: Date.now()
   });
   
-  // Add optional parameters
-  if (appName) urlParams.set('appName', encodeURIComponent(appName));
-  if (appIcon) urlParams.set('appIcon', encodeURIComponent(appIcon));
-  if (params && params.length > 0) urlParams.set('params', encodeURIComponent(JSON.stringify(params)));
-  if (gasLimit) urlParams.set('gasLimit', encodeURIComponent(gasLimit.toString()));
-  if (gasPrice) urlParams.set('gasPrice', encodeURIComponent(gasPrice.toString()));
-  if (value) urlParams.set('value', encodeURIComponent(value));
-  if (description) urlParams.set('description', encodeURIComponent(description));
-  
-  // Open contract approval popup
-  const approvalUrl = chrome.runtime.getURL(`index.html?${urlParams.toString()}`);
-  
-  const tab = await chrome.tabs.create({
-    url: approvalUrl,
-    active: true
-  });
+  // Try to open popup first
+  try {
+    await chrome.action.openPopup();
+  } catch (error) {
+    // If popup fails, fall back to tab
+    console.log('Popup failed for contract request, opening tab:', error);
+    
+    // Build URL parameters for contract request
+    const urlParams = new URLSearchParams({
+      action: 'contract',
+      origin: encodeURIComponent(origin),
+      contractAddress: encodeURIComponent(contractAddress),
+      methodName: encodeURIComponent(methodName),
+      methodType: encodeURIComponent(methodType),
+      connectedAddress: encodeURIComponent(connection.selectedAddress)
+    });
+    
+    // Add optional parameters
+    if (appName) urlParams.set('appName', encodeURIComponent(appName));
+    if (appIcon) urlParams.set('appIcon', encodeURIComponent(appIcon));
+    if (params && params.length > 0) urlParams.set('params', encodeURIComponent(JSON.stringify(params)));
+    if (gasLimit) urlParams.set('gasLimit', encodeURIComponent(gasLimit.toString()));
+    if (gasPrice) urlParams.set('gasPrice', encodeURIComponent(gasPrice.toString()));
+    if (value) urlParams.set('value', encodeURIComponent(value));
+    if (description) urlParams.set('description', encodeURIComponent(description));
+    
+    const approvalUrl = chrome.runtime.getURL(`index.html?${urlParams.toString()}`);
+    
+    await chrome.tabs.create({
+      url: approvalUrl,
+      active: true
+    });
+  }
   
   // Wait for user approval/rejection
   return new Promise((resolve) => {
@@ -279,22 +303,10 @@ async function handleContractRequest(data, sender) {
     
     chrome.runtime.onMessage.addListener(messageListener);
     
-    // Cleanup jika tab ditutup tanpa response
-    chrome.tabs.onRemoved.addListener(function tabRemovedListener(tabId) {
-      if (tabId === tab.id) {
-        chrome.tabs.onRemoved.removeListener(tabRemovedListener);
-        chrome.runtime.onMessage.removeListener(messageListener);
-        resolve({
-          type: 'CONTRACT_RESPONSE',
-          success: false,
-          error: 'User closed popup'
-        });
-      }
-    });
-    
     // Cleanup timeout after 5 minutes for contract calls
     setTimeout(() => {
       chrome.runtime.onMessage.removeListener(messageListener);
+      chrome.storage.local.remove('pendingContractRequest');
       resolve({
         type: 'CONTRACT_RESPONSE',
         success: false,

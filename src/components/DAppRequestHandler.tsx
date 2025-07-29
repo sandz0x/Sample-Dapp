@@ -34,15 +34,60 @@ export interface ContractParameter {
 
 interface DAppRequestHandlerProps {
   wallets: Wallet[];
+  contractRequest?: any;
+  selectedWallet?: Wallet | null;
+  onWalletSelect?: (wallet: Wallet) => void;
+  onApprove?: (result: any) => void;
+  onReject?: (error?: string) => void;
 }
 
-export function DAppRequestHandler({ wallets }: DAppRequestHandlerProps) {
+export function DAppRequestHandler({ 
+  wallets, 
+  contractRequest: propContractRequest,
+  selectedWallet: propSelectedWallet,
+  onWalletSelect: propOnWalletSelect,
+  onApprove: propOnApprove,
+  onReject: propOnReject
+}: DAppRequestHandlerProps) {
   const [connectionRequest, setConnectionRequest] = useState<DAppConnectionRequest | null>(null);
   const [contractRequest, setContractRequest] = useState<DAppContractRequest | null>(null);
   const [selectedWallet, setSelectedWallet] = useState<Wallet | null>(null);
   const [connectedWallet, setConnectedWallet] = useState<Wallet | null>(null);
 
   useEffect(() => {
+    // If contract request is passed as prop (from popup), use it directly
+    if (propContractRequest) {
+      const unifiedRequest = {
+        origin: propContractRequest.origin,
+        appName: propContractRequest.appName,
+        appIcon: propContractRequest.appIcon,
+        contractAddress: propContractRequest.contractAddress,
+        methodName: propContractRequest.methodName,
+        methodType: propContractRequest.methodType,
+        params: propContractRequest.params || [],
+        gasLimit: propContractRequest.gasLimit,
+        gasPrice: propContractRequest.gasPrice,
+        value: propContractRequest.value,
+        description: propContractRequest.description
+      };
+      
+      setContractRequest(unifiedRequest);
+      
+      // Set connected wallet if provided
+      if (propContractRequest.connectedAddress) {
+        const wallet = wallets.find(w => w.address === propContractRequest.connectedAddress);
+        if (wallet) {
+          setConnectedWallet(wallet);
+          if (propSelectedWallet) {
+            setSelectedWallet(propSelectedWallet);
+          } else {
+            setSelectedWallet(wallet);
+          }
+        }
+      }
+      return;
+    }
+    
     // Parse URL parameters for dApp requests
     const urlParams = new URLSearchParams(window.location.search);
     const action = urlParams.get('action');
@@ -203,31 +248,41 @@ export function DAppRequestHandler({ wallets }: DAppRequestHandlerProps) {
   const handleContractApprove = (result: any) => {
     if (!contractRequest) return;
     
-    // Send success response
-    chrome.runtime.sendMessage({
-      type: 'CONTRACT_RESULT',
-      origin: contractRequest.origin,
-      approved: true,
-      result: result
-    });
-    
-    // Close tab
-    window.close();
+    if (propOnApprove) {
+      // Use prop callback (popup mode)
+      propOnApprove(result);
+    } else {
+      // Send success response (tab mode)
+      chrome.runtime.sendMessage({
+        type: 'CONTRACT_RESULT',
+        origin: contractRequest.origin,
+        approved: true,
+        result: result
+      });
+      
+      // Close tab
+      window.close();
+    }
   };
 
   const handleContractReject = (error?: string) => {
     if (!contractRequest) return;
     
-    // Send rejection response
-    chrome.runtime.sendMessage({
-      type: 'CONTRACT_RESULT',
-      origin: contractRequest.origin,
-      approved: false,
-      error: error
-    });
-    
-    // Close tab
-    window.close();
+    if (propOnReject) {
+      // Use prop callback (popup mode)
+      propOnReject(error);
+    } else {
+      // Send rejection response (tab mode)
+      chrome.runtime.sendMessage({
+        type: 'CONTRACT_RESULT',
+        origin: contractRequest.origin,
+        approved: false,
+        error: error
+      });
+      
+      // Close tab
+      window.close();
+    }
   };
 
   // Render connection request
@@ -276,9 +331,9 @@ export function DAppRequestHandler({ wallets }: DAppRequestHandlerProps) {
       <UnifiedContractHandler
         request={unifiedRequest}
         wallets={wallets}
-        selectedWallet={selectedWallet}
+        selectedWallet={propSelectedWallet || selectedWallet}
         connectedWallet={connectedWallet}
-        onWalletSelect={setSelectedWallet}
+        onWalletSelect={propOnWalletSelect || setSelectedWallet}
         onApprove={handleContractApprove}
         onReject={handleContractReject}
       />
