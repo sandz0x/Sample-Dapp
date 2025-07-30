@@ -131,7 +131,7 @@ export function UnifiedContractHandler({
     params: string[],
     callerAddress: string
   ): Promise<any> => {
-    const rpcUrl = localStorage.getItem('selectedRPC') || 'https://rpc.octra.org';
+    const rpcUrl = localStorage.getItem('selectedRPC') || 'https://octra.network';
     
     try {
       const response = await fetch(`${rpcUrl}/contract/call-view`, {
@@ -172,7 +172,7 @@ export function UnifiedContractHandler({
     publicKey: string,
     nonce: number
   ): Promise<any> => {
-    const rpcUrl = localStorage.getItem('selectedRPC') || 'https://rpc.octra.org';
+    const rpcUrl = localStorage.getItem('selectedRPC') || 'https://octra.network';
     const timestamp = Date.now() / 1000;
     
     try {
