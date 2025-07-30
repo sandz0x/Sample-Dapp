@@ -24,6 +24,7 @@ import {
 import { Wallet } from '../types/wallet';
 import { fetchBalance } from '../utils/api';
 import { useToast } from '@/hooks/use-toast';
+import * as nacl from 'tweetnacl';
 
 export interface ContractMethod {
   name: string;
@@ -88,6 +89,17 @@ export function UnifiedContractHandler({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const { toast } = useToast();
 
+  // Get active RPC URL
+  const getActiveRPCUrl = (): string => {
+    try {
+      const providers = JSON.parse(localStorage.getItem('rpcProviders') || '[]');
+      const activeProvider = providers.find((p: any) => p.isActive);
+      return activeProvider?.url || 'https://octra.network';
+    } catch {
+      return 'https://octra.network';
+    }
+  };
+
   // Initialize parameter values
   useEffect(() => {
     const initialValues: Record<string, any> = {};
@@ -131,7 +143,7 @@ export function UnifiedContractHandler({
     params: string[],
     callerAddress: string
   ): Promise<any> => {
-    const rpcUrl = localStorage.getItem('selectedRPC') || 'https://octra.network';
+    const rpcUrl = getActiveRPCUrl();
     
     try {
       const response = await fetch(`${rpcUrl}/contract/call-view`, {
@@ -170,23 +182,26 @@ export function UnifiedContractHandler({
     callerAddress: string,
     privateKey: string,
     publicKey: string,
-    nonce: number
+    nonce: number,
+    gasLimit?: number,
+    gasPrice?: number,
+    value?: string
   ): Promise<any> => {
-    const rpcUrl = localStorage.getItem('selectedRPC') || 'https://octra.network';
+    const rpcUrl = getActiveRPCUrl();
     const timestamp = Date.now() / 1000;
     
     try {
-      // Create signature for contract call
+      // Create signature for contract call (adapted from main.rs)
       const signatureData = {
         from: callerAddress,
         to_: contractAddress,
-        amount: '0',
+        amount: value || '0',
         nonce: nonce,
         ou: '1',
         timestamp: timestamp
       };
       
-      const signature = await signTransaction(signatureData, privateKey);
+      const signature = await signTransaction(signatureData, privateKey, publicKey);
       
       const response = await fetch(`${rpcUrl}/call-contract`, {
         method: 'POST',
@@ -201,7 +216,9 @@ export function UnifiedContractHandler({
           nonce: nonce,
           timestamp: timestamp,
           signature: signature,
-          public_key: publicKey
+          public_key: publicKey,
+          gas_limit: gasLimit,
+          gas_price: gasPrice
         })
       });
 
@@ -216,11 +233,36 @@ export function UnifiedContractHandler({
     }
   };
 
-  // Signature function (production implementation needed)
-  const signTransaction = async (data: any, privateKey: string): Promise<string> => {
-    // TODO: Implement proper ed25519 signing
-    const dataString = JSON.stringify(data);
-    return btoa(dataString + privateKey).slice(0, 64);
+  // Proper signature function adapted from main.rs
+  const signTransaction = async (data: any, privateKeyBase64: string, publicKeyHex: string): Promise<string> => {
+    try {
+      // Create the signing blob exactly like main.rs
+      const blob = JSON.stringify({
+        from: data.from,
+        to_: data.to_,
+        amount: data.amount,
+        nonce: data.nonce,
+        ou: data.ou,
+        timestamp: data.timestamp
+      });
+      
+      // Convert keys to proper format
+      const privateKeyBuffer = Buffer.from(privateKeyBase64, 'base64');
+      const publicKeyBuffer = Buffer.from(publicKeyHex, 'hex');
+      
+      // Create secret key for nacl (64 bytes: 32 private + 32 public)
+      const secretKey = new Uint8Array(64);
+      secretKey.set(privateKeyBuffer, 0);
+      secretKey.set(publicKeyBuffer, 32);
+      
+      // Sign the blob
+      const signature = nacl.sign.detached(new TextEncoder().encode(blob), secretKey);
+      
+      return Buffer.from(signature).toString('base64');
+    } catch (error) {
+      console.error('Signing error:', error);
+      throw new Error('Failed to sign transaction');
+    }
   };
 
   const validateParameters = (): boolean => {
@@ -339,6 +381,17 @@ export function UnifiedContractHandler({
         String(parameterValues[param.name] || '')
       );
 
+      // Store contract interaction in history
+      const contractInteraction = {
+        type: request.method.type,
+        contractAddress: request.contractAddress,
+        methodName: request.method.name,
+        params: paramArray,
+        timestamp: Date.now(),
+        success: false,
+        walletAddress: selectedWallet.address
+      };
+
       if (request.method.type === 'view') {
         const result = await viewCall(
           request.contractAddress,
@@ -348,6 +401,12 @@ export function UnifiedContractHandler({
         );
         
         if (result.success) {
+          contractInteraction.success = true;
+          contractInteraction.result = result.result;
+          
+          // Save to contract history
+          saveContractInteraction(contractInteraction);
+          
           toast({
             title: "View Call Successful",
             description: "Contract view method executed successfully",
@@ -358,6 +417,8 @@ export function UnifiedContractHandler({
             methodName: request.method.name
           });
         } else {
+          contractInteraction.error = result.error;
+          saveContractInteraction(contractInteraction);
           throw new Error(result.error);
         }
       } else {
@@ -370,6 +431,9 @@ export function UnifiedContractHandler({
           throw new Error(`Insufficient balance. Need ${estimatedCost.toFixed(8)} OCT, but only have ${balance.toFixed(8)} OCT`);
         }
 
+        const gasLimit = customGasLimit ? parseInt(customGasLimit) : (request.gasLimit || 100000);
+        const gasPrice = customGasPrice ? parseFloat(customGasPrice) : (request.gasPrice || 0.001);
+
         const result = await callContract(
           request.contractAddress,
           request.method.name,
@@ -377,10 +441,19 @@ export function UnifiedContractHandler({
           selectedWallet.address,
           selectedWallet.privateKey,
           selectedWallet.publicKey || '',
-          nonce + 1
+          nonce + 1,
+          gasLimit,
+          gasPrice,
+          request.value
         );
 
         if (result.success) {
+          contractInteraction.success = true;
+          contractInteraction.txHash = result.txHash;
+          
+          // Save to contract history
+          saveContractInteraction(contractInteraction);
+          
           toast({
             title: "Contract Call Successful",
             description: "Contract method executed successfully",
@@ -391,6 +464,8 @@ export function UnifiedContractHandler({
             methodName: request.method.name
           });
         } else {
+          contractInteraction.error = result.error;
+          saveContractInteraction(contractInteraction);
           throw new Error(result.error);
         }
       }
@@ -404,6 +479,16 @@ export function UnifiedContractHandler({
       onReject(error.message);
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  const saveContractInteraction = (interaction: any) => {
+    try {
+      const existingHistory = JSON.parse(localStorage.getItem('contractHistory') || '[]');
+      const updatedHistory = [interaction, ...existingHistory].slice(0, 100); // Keep last 100 interactions
+      localStorage.setItem('contractHistory', JSON.stringify(updatedHistory));
+    } catch (error) {
+      console.error('Failed to save contract interaction:', error);
     }
   };
 
